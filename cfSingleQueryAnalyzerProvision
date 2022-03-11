@@ -1,0 +1,339 @@
+# ########################################################################
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# ########################################################################
+
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  functionCFAthenaQueryStateChange:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: functionCFAthenaQueryStateChange
+      Environment:
+        Variables:
+          emailFrom: "Anshuman Chakravarty <anshumch@amazon.com>"
+          emailTo: "anshumch@amazon.com,anshuman.chakravarty@gmail.com"
+      Code:
+        ZipFile: >
+          import json
+          
+          import boto3
+          
+          import datetime
+
+          import os
+          
+          clientAthena = boto3.client('athena')
+          
+          clientSes = boto3.client('ses',region_name='us-east-1')
+
+
+          def lambda_handler(event, context):
+              emails = os.environ['emailTo'].split(',') 
+              queryJson = {}
+              
+              try:
+                  
+                  print(event)
+                  queryDetail = event.get("detail")
+                  queryJson["account"] = event.get("account")
+                  queryJson["region"] = event.get("region")
+                  
+                  print(queryDetail)
+                  if(queryDetail.get("currentState") == "SUCCEEDED" 
+                  or queryDetail.get("currentState") == "FAILED" 
+                  or queryDetail.get("currentState") == "CANCELLED"):
+                      
+                      queryJson["currentState"] = queryDetail.get("currentState")
+                      queryJson["previousState"] = queryDetail.get("previousState")
+                      queryJson["currentState"] = queryDetail.get("currentState")
+                      queryJson["statementType"] = queryDetail.get("statementType")
+                      
+                      
+                      queryExecutionId = queryDetail.get("queryExecutionId")
+                      print(queryExecutionId)
+                      queryJson["queryExecutionId"] = queryDetail.get("queryExecutionId")
+                      queryJson["workgroupName"] = queryDetail.get("workgroupName")
+                      
+                      responseQueryExecutionDetails = clientAthena.get_query_execution(
+                              QueryExecutionId=queryExecutionId
+                          )
+                      
+                      print(responseQueryExecutionDetails)
+                      
+                      queryExecutionDetails = responseQueryExecutionDetails.get("QueryExecution")
+                      query = queryExecutionDetails.get("Query")
+                      queryResultConfiguration = queryExecutionDetails.get("ResultConfiguration")
+                      outputLocation = queryResultConfiguration.get("OutputLocation")
+                      queryExecutionContext = queryExecutionDetails.get("QueryExecutionContext")
+                      database = queryExecutionContext.get("Database")
+                      catalog = queryExecutionContext.get("Catalog")
+                      statistics = queryExecutionDetails.get("Statistics")
+                      totalBytesScanned = statistics.get("DataScannedInBytes")
+                      totalExecutionTimeInMillis = statistics.get("TotalExecutionTimeInMillis")
+                      status = queryExecutionDetails.get("Status")
+                      dateTimeSubmitted = status.get("SubmissionDateTime")
+                      
+                      queryJson["database"] = database
+                      queryJson["catalog"] = catalog
+                      queryJson["query"] = query
+                      queryJson["outputLocation"] = outputLocation
+                      queryJson["totalBytesScanned"] = totalBytesScanned
+                      queryJson["totalExecutionTimeInMillis"] = totalExecutionTimeInMillis
+                      queryJson["dateTimeSubmitted"] = dateTimeSubmitted.strftime('%Y-%m-%d::%H:%M:%S') + " UTC"
+                      
+                      totalTBScanned = totalBytesScanned/(1024**4)
+                      print("TB Scanned: " + str(totalTBScanned))
+                      queryCost = 5*totalTBScanned
+                      queryJson["queryCost"] = "$" + str(queryCost)
+                      print(queryJson)
+                      
+                      send_emails(emails, queryJson, True)
+              
+              except Exception as e:
+                  error = {}
+                  error["queryExecutionDetail"] = event.get("detail")
+                  error["error"] = e
+                  print(error)
+                  send_emails(emails, error, False)
+                      
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(queryJson)
+              }
+
+
+          # =============================================================================
+          # SEND EMAIL FUNCTION
+          # =============================================================================
+          
+          def send_emails(emails, queryJson, succeeded):
+              CHARSET = "UTF-8"
+              SENDER = os.environ['emailFrom'] 
+              SUBJECT = "Athena Query Run Analyzer"
+              BODY_TEXT = getEmailBody(queryJson, succeeded)
+
+              response = clientSes.send_email(
+                  Destination={
+                      'ToAddresses': emails
+                  },
+                  Message={
+                      'Body': {
+                          'Html': {
+                              'Charset': CHARSET,
+                              'Data': BODY_TEXT,
+                          },
+                      },
+                      'Subject': {
+                          'Charset': CHARSET,
+                          'Data': SUBJECT,
+                      },
+                  },
+                  Source=SENDER
+              )
+            
+              
+          # =============================================================================
+          # END OF SEND EMAIL FUNCTION
+          # =============================================================================
+
+          def getEmailBody(queryJson, succeeded):
+              if(succeeded == True):
+                  HTML_EMAIL_CONTENT = """
+                      <html>
+                          <head>
+                          </head>
+                          <h1 style='text-align:left'>Athena Query Run Analyzer</h1>
+                          <body>
+                              <p>
+                                  <table border="1" align="left">
+                                      <tr>
+                                          <th>Key</th>
+                                          <th>Value</th>
+                                      </tr>
+                                      <tr>
+                                          <td>Account</td>
+                                          <td>""" + json.dumps(queryJson.get("account"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Region</td>
+                                          <td>""" + json.dumps(queryJson.get("region"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Time Submitted</td>
+                                          <td>""" + json.dumps(queryJson.get("dateTimeSubmitted"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Final State</td>
+                                          <td>""" + json.dumps(queryJson.get("currentState"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Statement Type</td>
+                                          <td>""" + json.dumps(queryJson.get("statementType"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Query Execution Id</td>
+                                          <td>""" + json.dumps(queryJson.get("queryExecutionId"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Work Group Name</td>
+                                          <td>""" + json.dumps(queryJson.get("workgroupName"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Database</td>
+                                          <td>""" + json.dumps(queryJson.get("database"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Catalog</td>
+                                          <td>""" + json.dumps(queryJson.get("catalog"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Output Location</td>
+                                          <td>""" + json.dumps(queryJson.get("outputLocation"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Total Bytes Scanned</td>
+                                          <td>""" + json.dumps(str(queryJson.get("totalBytesScanned")), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Total Execution Time in Millis</td>
+                                          <td>""" + json.dumps(str(queryJson.get("totalExecutionTimeInMillis")), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Query Cost</td>
+                                          <td>""" + str(queryJson.get("queryCost")) + " *" + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td>Query</td>
+                                          <td>""" + json.dumps(queryJson.get("query"), default=str) + """</td>
+                                      </tr>
+                                      <tr>
+                                          <td colspan=2>* Query Cost shown is an estimate and not the actual bill.</td>
+                                      </tr>
+                                  </table>
+                              </p>
+                              <br>
+                              <br>
+                              <p> </p>
+                          </body>
+                      </html>
+                  """
+              else:
+                  queryJsonObj = json.dumps(queryJson, default=str)
+                  HTML_EMAIL_CONTENT = """
+                      <html>
+                          <head>
+                          </head>
+                          <h1 style='text-align:left'>Athena Query Run Analyzer Invocation Failed</h1>
+                          <body>
+                              <p>
+                                  <table border="1" align="left">
+                                      <tr>
+                                          <th>Key</th>
+                                          <th>Value</th>
+                                      </tr>
+                                      <tr>
+                                          <td>Query Execution Error Details</td>
+                                          <td>""" + queryJsonObj + """</td>
+                                      </tr>
+                                  </table>
+                              </p>
+                          </body>
+                      </html>
+                  """
+              return HTML_EMAIL_CONTENT
+      Handler: index.lambda_handler
+      Role:
+        'Fn::GetAtt':
+          - functionCFAthenaQueryStateChangeRole
+          - Arn
+      Runtime: python3.9
+      Timeout: 300
+    DependsOn:
+      - functionCFAthenaQueryStateChangeRole
+  permissionCFForEventsToInvokeLambda:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName:
+        Ref: functionCFAthenaQueryStateChange
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn:
+        'Fn::GetAtt':
+          - ruleCFAthenaQueryStateChange
+          - Arn
+    DependsOn:
+      - ruleCFAthenaQueryStateChange
+  functionCFAthenaQueryStateChangeRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: functionCFAthenaQueryStateChangeRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: functionCFAthenaQueryStateChangeRoleLogPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:putLogEvents'
+                Resource: '*'
+        - PolicyName: functionCFAthenaQueryStateChangeRoleAthenaPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'athena:*'
+                Resource: '*'
+        - PolicyName: functionCFAthenaQueryStateChangeRoleSesPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                Resource: '*'
+  ruleCFAthenaQueryStateChange:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: ruleCFAthenaQueryStateChange
+      EventPattern:
+        source:
+          - aws.athena
+        detail-type:
+          - Athena Query State Change
+      State: ENABLED
+      Targets:
+        - Arn:
+            'Fn::GetAtt':
+              - functionCFAthenaQueryStateChange
+              - Arn
+          Id: TargetFunctionV1
+    DependsOn:
+      - functionCFAthenaQueryStateChange
+  

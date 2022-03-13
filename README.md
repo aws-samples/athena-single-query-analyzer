@@ -1,11 +1,7 @@
-## My Project
+## Amazon Athena real-time query analyzer 
 
-TODO: Fill this README out!
+This builds out an application which is event driven and gives an user an analysis of any Athena query run under that AWS account.
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
 
 ## Security
 

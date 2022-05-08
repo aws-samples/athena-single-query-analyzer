@@ -1,22 +1,45 @@
 # ########################################################################
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: MIT-0
+# Disclaimer:
+# Code for example use only, not for production use
+# This code has not been thoroughly tested under all conditions so,
+# please do your own verification before using this code.
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this
-# software and associated documentation files (the "Software"), to deal in the Software
-# without restriction, including without limitation the rights to use, copy, modify,
-# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# Amazon Web Services makes no warranties, express or implied, in this document.
+# Amazon Web Services (AWS) may have patents, patent applications, trademarks,
+# copyrights, or other intellectual property rights covering subject matter in
+# this document. Except as expressly provided in any written license agreement
+# from AWS, our provision of this document does not give you any license to these
+# patents, trademarks, copyrights, or other intellectual property. The descriptions
+# of other companies products in this document, if any, are provided only as a
+# convenience to you. Any such references should not be considered an endorsement
+# or support by AWS. AWS cannot guarantee their accuracy, and the products may
+# change over time. Also, the descriptions are intended as brief highlights to aid
+# understanding, rather than as thorough coverage. For authoritative descriptions
+# of these products, please consult their respective manufacturers.
+# Copyright © 2022 Amazon Web Services, Inc. and/or its affiliates. All rights reserved.
 # ########################################################################
 
 AWSTemplateFormatVersion: 2010-09-09
+Description: Athena Multi Query API Gateway and Lambda function
+
+Parameters:
+  emailFrom:
+    Type: String
+    MinLength: 1
+    ConstraintDescription: "emailFrom is required."
+  emailTo:
+    Type: String
+    MinLength: 1
+    ConstraintDescription: "emailTo is required."
+  searchString:
+    Type: String
+    MinLength: 1
+    ConstraintDescription: "searchString is required."
+  regionSES:
+    Type: String
+    MinLength: 1
+    ConstraintDescription: "regionSES is required."
+
 Resources:
   functionCFAthenaQueryStateChange:
     Type: 'AWS::Lambda::Function'
@@ -24,8 +47,10 @@ Resources:
       FunctionName: functionCFAthenaQueryStateChange
       Environment:
         Variables:
-          emailFrom: "Anshuman Chakravarty <anshumch@amazon.com>"
-          emailTo: "anshumch@amazon.com,anshuman.chakravarty@gmail.com"
+          emailFrom: !Sub ${emailFrom}
+          emailTo: !Sub ${emailTo}
+          searchString: !Sub ${searchString}
+          regionSES: !Sub ${regionSES}
       Code:
         ZipFile: >
           import json
@@ -38,11 +63,12 @@ Resources:
           
           clientAthena = boto3.client('athena')
           
-          clientSes = boto3.client('ses',region_name='us-east-1')
+          clientSes = boto3.client('ses',region_name=os.environ['regionSES'])
 
 
           def lambda_handler(event, context):
               emails = os.environ['emailTo'].split(',') 
+              searchStringInput = os.environ['searchString']
               queryJson = {}
               
               try:
@@ -95,14 +121,20 @@ Resources:
                       queryJson["totalExecutionTimeInMillis"] = totalExecutionTimeInMillis
                       queryJson["dateTimeSubmitted"] = dateTimeSubmitted.strftime('%Y-%m-%d::%H:%M:%S') + " UTC"
                       
-                      totalTBScanned = totalBytesScanned/(1024**4)
-                      print("TB Scanned: " + str(totalTBScanned))
-                      queryCost = 5*totalTBScanned
-                      queryJson["queryCost"] = "$" + str(queryCost)
-                      print(queryJson)
-                      
-                      send_emails(emails, queryJson, True)
-              
+                      if(searchStringInFields(database, 
+                                catalog,
+                                outputLocation,
+                                searchStringInput)):
+                          totalTBScanned = totalBytesScanned/(1024**4)
+                          print("TB Scanned: " + str(totalTBScanned))
+                          queryCost = 5*totalTBScanned
+                          queryJson["queryCost"] = "$" + str(queryCost)
+                          print(queryJson)
+                          
+                          send_emails(emails, queryJson, True)
+                      else:
+                        print("No email sent as search string did not match any matching items!")
+
               except Exception as e:
                   error = {}
                   error["queryExecutionDetail"] = event.get("detail")
@@ -115,6 +147,17 @@ Resources:
                   'body': json.dumps(queryJson)
               }
 
+          def searchStringInFields(database, catalog, outputLocation, searchString):
+              result = False
+              
+              if((catalog != None and searchString in catalog)
+                  or (database != None and searchString in database)
+                  or (outputLocation != None and searchString in outputLocation)):
+                      result = True
+              
+              print("result: " + str(result))
+              
+              return result
 
           # =============================================================================
           # SEND EMAIL FUNCTION
@@ -337,3 +380,6 @@ Resources:
     DependsOn:
       - functionCFAthenaQueryStateChange
   
+Outputs:
+  functionCFAthenaQueryStateChangeArn:
+    Value: !GetAtt functionCFAthenaQueryStateChange.Arn

@@ -16,7 +16,7 @@
 # ########################################################################
 
 AWSTemplateFormatVersion: 2010-09-09
-Description: Athena Multi Query Analyzer solution CF stack
+Description: Athena Single Query Analyzer solution CF stack
 
 Parameters:
   emailFrom:
